@@ -3,6 +3,8 @@
 #include <sys/epoll.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <iostream>
+#include <errno.h>
 #include <sys/socket.h>
 
 

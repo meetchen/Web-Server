@@ -63,6 +63,7 @@ void ThreadPool<T>::run()
         auto p = m_workerqueue.front();
         m_workerqueue.pop_front();
         m_lock.unlock();
+        if (!p) continue;
         p -> process();
     }
 }

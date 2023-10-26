@@ -65,8 +65,13 @@ int main(int argc, char *argv[])
     int epollFd = epoll_create(10);
     
     HttpConn::m_epollFd = epollFd;
+    
+    epoll_event event;
+    event.data.fd = listenFd;
+    event.events = EPOLLIN | EPOLLRDHUP;
+    setNoBlock(listenFd);
+    epoll_ctl(epollFd, EPOLL_CTL_ADD, listenFd, &event);
 
-    addFdToEpoll(listenFd, epollFd, false);
 
     // 保存所有链接
     HttpConn* connects = new HttpConn[MAX_CONNECT];
@@ -76,7 +81,6 @@ int main(int argc, char *argv[])
     
     while (true)
     {
-        std::cout << "epoll wait ...." << std::endl;
         int ret = epoll_wait(epollFd, events, MAX_EPOOL_LISTEN, -1);
         if (ret == -1 && errno != ERANGE) 
         {
@@ -96,33 +100,32 @@ int main(int argc, char *argv[])
                 sockaddr_in address;
                 socklen_t len = sizeof(sockaddr_in);
                 int clienFd = accept(listenFd, (struct sockaddr*)&address, &len);
-                addFdToEpoll(clienFd, epollFd, true);
                 connects[clienFd].init(address, clienFd);
                 HttpConn::m_connCount++;
             }
             else if (cur.events & EPOLLIN)
             {
+                printf("epoll in catch, fd = %d \n", fd);
                 if (connects[fd].readAll())
                 {
                     pool->addWork(connects + fd);
                 }
                 else
                 {
-                    connects[fd].close();
-                    delFdFromEpoll(fd, epollFd);
+                    connects[fd].close_conn();
                 }
             }
             else if (cur.events & EPOLLOUT)
             {
+                printf("epoll out catch, fd = %d \n", fd);
                 if (!connects[fd].writeALL())
                 {
-                    connects[fd].close();
-                    delFdFromEpoll(fd, epollFd);
+                    connects[fd].close_conn();
                 }
             }
             else if (cur.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR))
             {
-                connects[fd].close();
+                connects[fd].close_conn();
             }
         }
     }
