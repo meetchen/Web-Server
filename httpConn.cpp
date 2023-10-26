@@ -3,7 +3,7 @@
 int HttpConn::m_connCount = 0;
 int HttpConn::m_epollFd = 0;
 
-HttpConn::HttpConn() : m_read_idx(0)
+HttpConn::HttpConn() 
 {
 }
 
@@ -11,23 +11,45 @@ HttpConn::~HttpConn()
 {
 }
 
-void HttpConn::init(sockaddr_in& addr, int connFd)
+void HttpConn::init(sockaddr_in &addr, int connFd)
 {
+
     this->addr = addr;
     this->connFd = connFd;
-    this->m_write_idx = 0;
-    this->m_has_send = 0;
-    this->m_need_send = 0;
-    // std::cout << connFd << std::endl;
+
     bool ret = setPortReuse(connFd);
     addFdToEpoll(connFd, this->m_epollFd, true);
+
     m_connCount++;
-    this->init();
+    init();
+}
+
+void HttpConn::init()
+{
+    m_main_state = CHECK_STATE_REQUESTLINE;
+
+    this->m_has_send = 0;
+    this->m_need_send = 0;
+
+    this->m_write_idx = 0;
+    this->m_read_idx = 0;
+
+    this->m_parseIdx = 0;
+    this->m_parse_line = 0;
+    this->m_write_line = 0;
+
+    bzero(m_req_resoures, sizeof m_req_resoures);
+    bzero(readBuf, sizeof readBuf);
+    bzero(writeBuf, sizeof writeBuf);
+
+    m_header_info.clear();
 }
 
 bool HttpConn::readAll()
 {
 
+    // std::cout << "read All" << std::endl;
+ 
     if (m_read_idx >= READ_BUFF_SIZE)
     {
         return false;
@@ -70,16 +92,13 @@ bool HttpConn::writeALL()
 {
     // std::cout << "write All" << std::endl;
 
-    // for (int i = 0; i < m_write_idx; i++)
-    // {
-    //     printf("%c", writeBuf[i]);
-    // }
-    // puts("");
+
 
     if (m_need_send == 0)
     {
         updateFdFromEpoll(this->connFd, this->m_epollFd, EPOLLIN);
-        return false;
+        init();
+        return true;
     }
     while (true)
     {
@@ -98,10 +117,19 @@ bool HttpConn::writeALL()
         m_has_send += ret;
         m_need_send -= ret;
 
-        printf("ret = %d, has finish : %d, need to send: %d , resoure len : %d\n", ret, m_has_send, m_need_send, m_stat_resoure.st_size);
+        printf("\nResp:\n\n");
+
+        for (int i = 0; i < m_write_idx; i++)
+        {
+            printf("%c", writeBuf[i]);
+        }
+
+        puts(" ");
+
+        // printf("file : %s, ret = %d, has finish : %d, need to send: %d , resoure len : %d, head_size : %d\n", m_req_resoures, ret, m_has_send, m_need_send, m_stat_resoure.st_size, m_write_idx);
         if (m_need_send <= 0)
         {
-            updateFdFromEpoll(this->connFd, this->m_epollFd, EPOLLIN);
+            unmmap();
             return false;
         }
 
@@ -117,15 +145,20 @@ bool HttpConn::writeALL()
             m_write_all[0].iov_len = m_write_idx - m_has_send;
         }
     }
-
-    return true;
 }
 
-bool HttpConn::close_conn()
+void HttpConn::close_conn()
 {
-    delFdFromEpoll(this->connFd, this->m_epollFd);
-    close(this->connFd);
-    return true;
+    if (this->connFd != -1)
+    {
+        close(this->connFd);
+        // std::cout << "close_conn" << this->connFd << std::endl;
+        unmmap();
+
+        delFdFromEpoll(this->connFd, this->m_epollFd);
+        this->connFd = -1;
+        m_connCount--;
+    }
 }
 
 void HttpConn::process()
@@ -135,12 +168,10 @@ void HttpConn::process()
     if (retRead == INCOMPLETE_REQUEST)
     {
         // 读取的数据不完整，继续监控读事件
-        updateFdFromEpoll(this->connFd, this->m_epollFd, EPOLLIN);
+        // updateFdFromEpoll(this->connFd, this->m_epollFd, EPOLLIN);
         return;
     }
 
-    // 处理过程
-    // std::cout << "get resoure data" << std::endl;
 
     // 将数据写入到写缓冲区
     bool retWrite = process_write();
@@ -156,6 +187,8 @@ void HttpConn::process()
 
 HttpConn::HTTP_CODE HttpConn::process_read()
 {
+    printf("\nReq:\n\n");
+    
     HTTP_CODE ret = INCOMPLETE_REQUEST;
     LINE_STATUS lineState = GOOD_LINE;
     char *text = nullptr;
@@ -221,6 +254,8 @@ bool HttpConn::process_write()
 {
     // std::cout << " begin to process_write" << std::endl;
     writeRespHeader();
+
+
     m_write_all[0].iov_base = writeBuf;
     m_write_all[0].iov_len = m_write_idx;
     m_write_all[1].iov_base = m_resoure;
@@ -267,7 +302,7 @@ char *HttpConn::getLine()
 
 HttpConn::HTTP_CODE HttpConn::parseFirstRow(char *str)
 {
-
+    printf("%s\n", str);
     // GET / HTTP/1.1
     char *temp = strtok(str, " ");
 
@@ -285,7 +320,7 @@ HttpConn::HTTP_CODE HttpConn::parseFirstRow(char *str)
     else
         strcpy(m_req_resoures, temp + 1);
 
-    printf("m_req_resoures = %s\n", m_req_resoures);
+    // printf("m_req_resoures = %s\n", m_req_resoures);
 
     temp = strtok(NULL, " ");
     if (temp == nullptr)
@@ -295,7 +330,6 @@ HttpConn::HTTP_CODE HttpConn::parseFirstRow(char *str)
     strcpy(m_version, temp);
 
     m_main_state = CHECK_STATE_HEADER;
-
     // printf("parse FirstRow: \n\tpath = %s \n\tversion = %s \n", m_req_resoures, m_version);
 
     return GOOD_REQUEST;
@@ -314,7 +348,13 @@ HttpConn::HTTP_CODE HttpConn::parseHeader(char *str)
     std::string key = temp.substr(0, idx);
     std::string value = temp.substr(idx + 2);
     std::cout << key << ":" << value << std::endl;
-    puts(" ");
+
+    if (strcmp(key.c_str(), "Accept") == 0)
+    {
+        idx = value.find(",");
+        value = value.substr(0, idx);
+    }
+
     m_header_info.insert({key, value});
 }
 
@@ -324,11 +364,6 @@ HttpConn::HTTP_CODE HttpConn::parseBody(char *str)
     return GOOD_REQUEST;
 }
 
-void HttpConn::init()
-{
-    m_parseIdx = 0;
-    m_parse_line = 0;
-}
 
 HttpConn::HTTP_CODE HttpConn::doRequest()
 {
@@ -352,15 +387,25 @@ char *HttpConn::getResoure(char *str)
         }
         int fd = open(dist.c_str(), O_RDONLY);
         off_t len = lseek(fd, 0, SEEK_END);
+
         void *addr = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0);
         if (addr == (void *)-1)
         {
             perror("mmap");
-            throw std::exception();
+            // throw std::exception();
         }
         return (char *)addr;
     }
     return nullptr;
+}
+
+void HttpConn::unmmap()
+{
+    if (m_resoure)
+    {
+        munmap(m_resoure, m_stat_resoure.st_size);
+        m_resoure = 0;
+    }
 }
 
 HttpConn::HTTP_CODE HttpConn::writeRespHeader()
@@ -378,15 +423,35 @@ HttpConn::HTTP_CODE HttpConn::writeRespHeader()
         Transfer-Encoding: chunked
 
     */
+
+
     char buf[100];
-    sprintf(buf, "%s 200 OK \r\n", m_version);
+    sprintf(buf, "%s 200 OK\r\n", m_version);
     writeLine(buf);
 
     memset(buf, 0, sizeof buf);
-    writeLine("Connection: keep-alive \r\n");
-    writeLine("Content-Type: text/html; charset=utf-8 \r\n");
-    writeLine("\r\n");
+    writeLine("Connection: keep-alive\r\n");
+
+
+    if (m_header_info.count("Accept"))
+    {
+        memset(buf, 0, sizeof buf);
+        sprintf(buf, "Content-Type: %s\r\n", m_header_info["Accept"].c_str());
+        writeLine(buf);
+    }
+    else
+    {
+        writeLine("Content-Type: text/html; charset=utf-8\r\n");
+    }
     
+    
+    memset(buf, 0, sizeof buf);
+    sprintf(buf, "Content-Length: %d\r\n", m_stat_resoure.st_size);
+    writeLine(buf);
+
+
+    writeLine("\r\n");
+
 
     return INCOMPLETE_REQUEST;
 }
@@ -400,7 +465,7 @@ HttpConn::LINE_STATUS HttpConn::writeLine(char *text)
 
     m_write_idx += strlen(text);
     strcpy(writeBuf + m_write_line, text);
-    printf("write line: \n%s\n", writeBuf + m_write_line);
+    // printf("write line: \n%s\n", writeBuf + m_write_line);
     m_write_line += strlen(text);
     return GOOD_LINE;
 }

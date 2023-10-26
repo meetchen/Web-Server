@@ -66,11 +66,8 @@ int main(int argc, char *argv[])
     
     HttpConn::m_epollFd = epollFd;
     
-    epoll_event event;
-    event.data.fd = listenFd;
-    event.events = EPOLLIN | EPOLLRDHUP;
-    setNoBlock(listenFd);
-    epoll_ctl(epollFd, EPOLL_CTL_ADD, listenFd, &event);
+
+    addFdToEpoll(listenFd, epollFd, false);
 
 
     // 保存所有链接
@@ -101,11 +98,10 @@ int main(int argc, char *argv[])
                 socklen_t len = sizeof(sockaddr_in);
                 int clienFd = accept(listenFd, (struct sockaddr*)&address, &len);
                 connects[clienFd].init(address, clienFd);
-                HttpConn::m_connCount++;
             }
             else if (cur.events & EPOLLIN)
             {
-                printf("epoll in catch, fd = %d \n", fd);
+                // printf("epoll in catch, fd = %d \n", fd);
                 if (connects[fd].readAll())
                 {
                     pool->addWork(connects + fd);
@@ -117,7 +113,7 @@ int main(int argc, char *argv[])
             }
             else if (cur.events & EPOLLOUT)
             {
-                printf("epoll out catch, fd = %d \n", fd);
+                // printf("epoll out catch, fd = %d \n", fd);
                 if (!connects[fd].writeALL())
                 {
                     connects[fd].close_conn();
